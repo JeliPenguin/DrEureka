@@ -10,71 +10,57 @@ class EurekaReward():
     def load_env(self, env):
         self.env = env
 
-    def compute_reward(self, using_curriculum=False):
+    def compute_reward(self):
         env = self.env  # Do not skip this line. Afterwards, use env.{parameter_name} to access parameters of the environment.
+        
+        # Calculate the velocity reward based on how close the robot's base linear velocity in the x direction is to 2.0 m/s
+        target_velocity = 2.0
+        vel_error = torch.abs(env.base_lin_vel[:, 0] - target_velocity)
+        velocity_reward = 1.0 - vel_error / target_velocity
     
-        # Ideal forward velocity in the x direction
-        # target_velocity_x = 2.0
-        target_velocity_x = self.env.cfg.rewards.target_velocity
-        # Ideal height of the robot's torso
-        target_height_z = 0.34
+        # Reward for maintaining torso height near 0.34 meters
+        target_height = 0.34
+        height_error = torch.abs(env.root_states[:, 2] - target_height)
+        height_reward = 1.0 - height_error / target_height
     
-        # Compute the velocity reward component
-        current_velocity_x = env.root_states[:, 7]  # Linear velocity in x from the root_states tensor
-        velocity_error = torch.abs(current_velocity_x - target_velocity_x)
-        velocity_reward = torch.exp(-velocity_error)
+        # Reward for maintaining orientation perpendicular to gravity
+        orientation_reward = -torch.norm(env.projected_gravity[:, :2], dim=1)  # Should be close to zero
     
-        # Compute the height reward component
-        current_height = env.root_states[:, 2]  # Position in z from the root_states tensor
-        height_error = torch.abs(current_height - target_height_z)
-        height_reward = torch.exp(-5.0 * height_error)  # More weight to maintain height
+        # Penalty for high action rates (difference between consecutive actions)
+        action_rate_penalty = torch.sum(torch.abs(env.actions - env.last_actions), dim=1)
     
-        # Compute the orientation reward component
-        # Ideal orientation is perpendicular to gravity, i.e., the projected gravity vector should be [0, 0, -1] in the robot's frame
-        ideal_projected_gravity = torch.tensor([0., 0., -1.], device=env.device).repeat((env.num_envs, 1))
-        orientation_error = torch.norm(env.projected_gravity - ideal_projected_gravity, dim=1)
-        orientation_reward = torch.exp(-5.0 * orientation_error)  # More weight to maintain orientation
+        # Penalty for DOF limit violations
+        dof_pos_penalty = torch.sum(torch.abs(env.dof_pos - env.default_dof_pos) > (env.dof_pos_limits[:, 1] - env.dof_pos_limits[:, 0]) * 0.5, dim=1).float()
     
-        # Legs movement within DOF limits reward component
-        dof_limit_violations = torch.any(
-            (env.dof_pos < env.dof_pos_limits[:, 0]) | (env.dof_pos > env.dof_pos_limits[:, 1]),
-            dim=-1)
-        dof_limit_violations_reward = 1.0 - dof_limit_violations.float()  # Penalize if any DOF limit is violated
+        # Penalty for high torques to encourage energy efficiency
+        torque_penalty = torch.sum(env.torques ** 2, dim=1)
+        
+        # Combine all reward terms
+        reward = (
+            2.0 * velocity_reward
+            + 0.5 * height_reward
+            + 1.0 * orientation_reward
+            - 0.01 * action_rate_penalty
+            - 0.1 * dof_pos_penalty
+            - 0.001 * torque_penalty
+        )
     
-        # Smoothness reward component (penalize the change in actions to encourage smooth movements)
-        action_difference = torch.norm(env.actions - env.last_actions, dim=1)
-        smoothness_reward = torch.exp(-0.1 * action_difference)
+        # Returning individual reward components for logging/debugging purposes
+        reward_components = {
+            "velocity_reward": velocity_reward,
+            "height_reward": height_reward,
+            "orientation_reward": orientation_reward,
+            "action_rate_penalty": action_rate_penalty,
+            "dof_pos_penalty": dof_pos_penalty,
+            "torque_penalty": torque_penalty
+        }
     
-        # Combine reward components
-        total_reward = velocity_reward * height_reward * orientation_reward * dof_limit_violations_reward * smoothness_reward
-    
-        # Debug information
-        reward_components = {"velocity_reward": velocity_reward,
-                             "height_reward": height_reward,
-                             "orientation_reward": orientation_reward,
-                             "dof_limit_violations_reward": dof_limit_violations_reward,
-                             "smoothness_reward": smoothness_reward}
-
-        if using_curriculum:
-            # Additional terms, only used when training with curriculum
-            def _reward_tracking_lin_vel(env):
-                # Tracking of linear velocity commands (xy axes)
-                if env.cfg.commands.global_reference:
-                    lin_vel_error = torch.sum(torch.square(env.commands[:, :2] - env.root_states[:, 7:9]), dim=1)
-                else:
-                    lin_vel_error = torch.sum(torch.square(env.commands[:, :2] - env.base_lin_vel[:, :2]), dim=1)
-                return torch.exp(-lin_vel_error / env.cfg.rewards.tracking_sigma)
-            def _reward_tracking_ang_vel(env):
-                # Tracking of angular velocity commands (yaw) 
-                ang_vel_error = torch.square(env.commands[:, 2] - env.base_ang_vel[:, 2])
-                return torch.exp(-ang_vel_error / env.cfg.rewards.tracking_sigma_yaw)
-            reward_components["tracking_lin_vel"] = _reward_tracking_lin_vel(env)
-            reward_components["tracking_ang_vel"] = _reward_tracking_ang_vel(env)
-                             
-        return total_reward, reward_components
+        return reward, reward_components
     
     # Success criteria as forward velocity
     def compute_success(self):
         target_velocity = 2.0
         lin_vel_error = torch.square(target_velocity - self.env.root_states[:, 7])
         return torch.exp(-lin_vel_error / 0.25)
+
+

@@ -10,12 +10,15 @@ import subprocess
 from pathlib import Path
 import shutil
 import time 
-
+import torch
+import threading
 from utils.misc import * 
 from utils.extract_task_code import *
 
 EUREKA_ROOT_DIR = os.getcwd()
 ROOT_DIR = f"{EUREKA_ROOT_DIR}/.."
+
+semaphore = threading.Semaphore(2)
 
 @hydra.main(config_path="cfg", config_name="config", version_base="1.1")
 def main(cfg):
@@ -103,6 +106,13 @@ def main(cfg):
             total_completion_token += response_cur["usage"]["completion_tokens"]
             total_token += response_cur["usage"]["total_tokens"]
 
+        # Loading pre-queried reward functions
+        #reward_dir = os.path.join(EUREKA_ROOT_DIR,"saved_rewards")
+        #responses = torch.load(os.path.join(reward_dir,"responses.pt"))
+        #prompt_tokens = torch.load(os.path.join(reward_dir,"prompt_tokens.pt"))
+        #total_completion_token = torch.load(os.path.join(reward_dir,"total_completion_token.pt"))
+        #total_token = torch.load(os.path.join(reward_dir,"total_token.pt"))
+
         if cfg.sample == 1:
             logging.info(f"Iteration {iter}: GPT Output:\n " + responses[0]["message"]["content"] + "\n")
 
@@ -163,7 +173,7 @@ def main(cfg):
                 command = command.split(" ")
                 if not cfg.use_wandb:
                     command.append("--no-wandb")
-                process = subprocess.Popen(command, stdout=f, stderr=f)
+                process = subprocess.run(command, stdout=f, stderr=f)
             block_until_training(rl_filepath, success_keyword=cfg.env.success_keyword, failure_keyword=cfg.env.failure_keyword,
                                  log_status=True, iter_num=iter, response_id=response_id)
             rl_runs.append(process)
@@ -177,7 +187,7 @@ def main(cfg):
         
         exec_success = False 
         for response_id, (code_run, rl_run) in enumerate(zip(code_runs, rl_runs)):
-            rl_run.communicate()
+            # rl_run.communicate()
             rl_filepath = f"env_iter{iter}_response{response_id}.txt"
             code_paths.append(f"env_iter{iter}_response{response_id}.py")
             try:

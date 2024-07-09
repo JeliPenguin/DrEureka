@@ -31,6 +31,7 @@ def filter_traceback(s):
 
 def block_until_training(rl_filepath, success_keyword, failure_keyword, log_status=False, iter_num=-1, response_id=-1):
     # Ensure that the RL training has started before moving on
+
     while True:
         rl_log = file_to_string(rl_filepath)
         if "running" in rl_log or "Traceback" in rl_log:
